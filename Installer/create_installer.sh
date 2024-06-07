@@ -6,8 +6,8 @@
 # it may need execute permissions first by running this command:
 #   chmod +x create_installer.sh
 
-driverName="BlackHole"
-devTeamID="Q5C99V536K" # ⚠️ Replace this with your own developer team ID
+driverName="面试助手"
+devTeamID="474F6X9DT2" # ⚠️ Replace this with your own developer team ID
 notarize=true # To skip notarization, set this to false
 notarizeProfile="notarize" # ⚠️ Replace this with your own notarytool keychain profile name
 

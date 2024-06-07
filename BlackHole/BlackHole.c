@@ -13,6 +13,7 @@
 //==================================================================================================
 
 #include <CoreAudio/AudioServerPlugIn.h>
+#include <AudioToolbox/AudioToolbox.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
@@ -609,6 +610,56 @@ static bool is_valid_sample_rate(Float64 sample_rate)
     return false;
 }
 
+// 新增变量
+AudioComponentInstance outputAudioUnit;
+AudioStreamBasicDescription audioFormat;
+pthread_mutex_t audioMutex = PTHREAD_MUTEX_INITIALIZER;
+
+// 初始化输出音频单元
+static OSStatus initOutputAudioUnit(void) {
+    OSStatus status;
+    
+    // 描述输出单元
+    AudioComponentDescription desc = {0};
+    desc.componentType = kAudioUnitType_Output;
+    desc.componentSubType = kAudioUnitSubType_DefaultOutput;
+    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+
+    // 获取输出单元
+    AudioComponent comp = AudioComponentFindNext(NULL, &desc);
+    if (comp == NULL) {
+        return kAudioHardwareUnspecifiedError;
+    }
+
+    status = AudioComponentInstanceNew(comp, &outputAudioUnit);
+    if (status != noErr) {
+        return status;
+    }
+
+    // 设置音频格式
+    audioFormat.mSampleRate = 44100;
+    audioFormat.mFormatID = kAudioFormatLinearPCM;
+    audioFormat.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    audioFormat.mFramesPerPacket = 1;
+    audioFormat.mChannelsPerFrame = kNumber_Of_Channels;
+    audioFormat.mBytesPerFrame = sizeof(Float32) * kNumber_Of_Channels;
+    audioFormat.mBytesPerPacket = audioFormat.mBytesPerFrame * audioFormat.mFramesPerPacket;
+    audioFormat.mBitsPerChannel = sizeof(Float32) * 8;
+
+    status = AudioUnitSetProperty(outputAudioUnit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &audioFormat, sizeof(audioFormat));
+    if (status != noErr) {
+        return status;
+    }
+
+    // 初始化音频单元
+    status = AudioUnitInitialize(outputAudioUnit);
+    if (status != noErr) {
+        return status;
+    }
+
+    return noErr;
+}
+
 #pragma mark Factory
 
 void*	BlackHole_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID)
@@ -789,6 +840,7 @@ static OSStatus	BlackHole_Initialize(AudioServerPlugInDriverRef inDriver, AudioS
     gDevice_AdjustedTicksPerFrame = gDevice_HostTicksPerFrame - gDevice_HostTicksPerFrame/100.0 * 2.0*(gPitch_Adjust - 0.5);
     
     // DebugMsg("BlackHole theTimeBaseInfo.numer: %u \t theTimeBaseInfo.denom: %u", theTimeBaseInfo.numer, theTimeBaseInfo.denom);
+    initOutputAudioUnit();
 	
 Done:
 	return theAnswer;
@@ -4512,6 +4564,7 @@ Done:
 	return theAnswer;
 }
 
+
 static OSStatus	BlackHole_DoIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, AudioObjectID inStreamObjectID, UInt32 inClientID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo* inIOCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer)
 {
 	//	This is called to actually perform a given operation. 
@@ -4595,6 +4648,20 @@ static OSStatus	BlackHole_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         // Save the last output time.
         lastOutputSampleTime = inIOCycleInfo->mOutputTime.mSampleTime + inIOBufferFrameSize;
         isBufferClear = false;
+        
+        // 新增的音频转发代码
+        pthread_mutex_lock(&audioMutex);
+        AudioBufferList bufferList;
+        bufferList.mNumberBuffers = 1;
+        bufferList.mBuffers[0].mNumberChannels = kNumber_Of_Channels;
+        bufferList.mBuffers[0].mDataByteSize = inIOBufferFrameSize * kNumber_Of_Channels * sizeof(Float32);
+        bufferList.mBuffers[0].mData = ioMainBuffer;
+        
+        OSStatus status = AudioUnitRender(outputAudioUnit, NULL, NULL, 0, inIOBufferFrameSize, &bufferList);
+        if (status != noErr) {
+            fprintf(stderr, "Error forwarding audio data: %d\n", status);
+        }
+        pthread_mutex_unlock(&audioMutex);
     }
 
 Done:
